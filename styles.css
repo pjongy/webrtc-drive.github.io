@@ -1,0 +1,676 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  --fg: #1a1a1a;
+  --bg: #f6f6f4;
+  --card: #ffffff;
+  --muted: #5f6368;
+  --accent: #1a5fd0;
+  --accent-fg: #ffffff;
+  --border: #d9d9d6;
+  --secret: #1f8a4c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ececec;
+    --bg: #161616;
+    --card: #222222;
+    --muted: #a8a8a8;
+    --accent: #6ea2ff;
+    --accent-fg: #0b1b36;
+    --border: #3a3a3a;
+    --secret: #5fd08a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 1rem;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+main {
+  max-width: 32rem;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.25rem;
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-size: 1rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+h2:first-child {
+  margin-top: 0;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+}
+
+.code {
+  font-size: 2.25rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+  margin: 0;
+  text-align: center;
+}
+
+.qr {
+  display: block;
+  width: min(14rem, 100%);
+  height: auto;
+  margin: 0.75rem auto 0;
+  image-rendering: pixelated;
+  border-radius: 0.25rem;
+}
+
+.expires,
+.notice {
+  color: var(--muted);
+  text-align: center;
+  min-height: 1.25em;
+}
+
+.join {
+  display: flex;
+  gap: 0.5rem;
+}
+
+input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 1.25rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+button {
+  font: inherit;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--accent);
+  width: 100%;
+  margin-top: 0.75rem;
+}
+
+.scanner {
+  display: block;
+  width: 100%;
+  border-radius: 0.5rem;
+  background: #000;
+}
+
+.progress {
+  font-size: 1.25rem;
+  text-align: center;
+}
+
+.messages,
+.transfers {
+  list-style: none;
+  margin: 1rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.messages {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.message {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  max-width: 85%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+}
+
+.message.mine {
+  align-self: flex-end;
+  background: var(--bg);
+}
+
+.message.theirs {
+  align-self: flex-start;
+}
+
+.message .body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+
+.message .copy,
+.secondary-inline {
+  background: transparent;
+  color: var(--accent);
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.compose {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+textarea {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  color: var(--fg);
+  resize: vertical;
+}
+
+.file-pick {
+  display: block;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.5rem;
+  text-align: center;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.file-pick input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.file-pick .hint {
+  color: var(--muted);
+}
+
+.dropping .file-pick {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.transfer {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.transfer .name {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.transfer .meta {
+  margin: 0.25rem 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.transfer progress {
+  width: 100%;
+}
+
+.transfer .actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.25rem;
+}
+
+.transfer .thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 12rem;
+  margin: 0.5rem 0;
+  border-radius: 0.25rem;
+}
+
+.download {
+  color: var(--accent);
+}
+
+.card > .hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------------------
+   How it works: a 12 s loop in three phases
+     0–25 %   the same code on both screens; the secret stays on the devices
+     25–60 %  sealed notes travel through the pipe server
+     60–100 % data goes directly between the devices; the pipe is idle
+   ------------------------------------------------------------------------ */
+
+.how {
+  max-width: 32rem;
+  margin: 1rem auto 0;
+}
+
+body[data-state="connected"] .how {
+  display: none;
+}
+
+.how-diagram {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.how-diagram text {
+  text-anchor: middle;
+  fill: var(--fg);
+  font-size: 13px;
+}
+
+.how-diagram .small {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.how-diagram .label {
+  font-weight: 600;
+}
+
+.how-diagram .box {
+  fill: var(--card);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.how-diagram .screen {
+  fill: var(--bg);
+  stroke: var(--border);
+}
+
+.how-diagram .channel {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.how-diagram .secret {
+  font-size: 16px;
+  letter-spacing: 1px;
+  animation: how-secret 12s infinite;
+}
+
+.how-diagram .route {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  animation: how-route 12s infinite linear;
+}
+
+.how-diagram .pipe {
+  animation: how-pipe 12s infinite;
+}
+
+.how-diagram .pipe-sees {
+  animation: how-show-pairing 12s infinite;
+}
+
+.how-diagram .pipe-idle {
+  opacity: 0;
+  animation: how-show-direct 12s infinite;
+}
+
+.how-diagram .direct {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 4;
+  stroke-linecap: round;
+  animation: how-direct 12s infinite;
+}
+
+.how-diagram .direct-label {
+  fill: var(--accent);
+  opacity: 0;
+  animation: how-show-direct 12s infinite;
+}
+
+.how-diagram .packet {
+  opacity: 0;
+}
+
+.how-diagram .sealed rect {
+  fill: var(--card);
+  stroke: var(--secret);
+  stroke-width: 1.5;
+}
+
+.how-diagram .sealed path {
+  fill: none;
+  stroke: var(--secret);
+  stroke-width: 1.5;
+}
+
+.how-diagram .data path {
+  fill: var(--accent);
+}
+
+.how-diagram .sealed-ab {
+  animation: how-sealed-ab 12s infinite;
+}
+
+.how-diagram .sealed-ba {
+  animation: how-sealed-ba 12s infinite;
+}
+
+.how-diagram .data-ab {
+  animation: how-data-ab 12s infinite;
+}
+
+.how-diagram .data-ba {
+  animation: how-data-ba 12s infinite;
+}
+
+.how-steps {
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  color: var(--muted);
+}
+
+.how-steps li {
+  padding-left: 0.25rem;
+}
+
+.how-steps .step-code {
+  animation: how-step-code 12s infinite;
+}
+
+.how-steps .step-pipe {
+  animation: how-step-pipe 12s infinite;
+}
+
+.how-steps .step-direct {
+  animation: how-step-direct 12s infinite;
+}
+
+@keyframes how-secret {
+  0%,
+  24% {
+    fill: var(--secret);
+  }
+  26%,
+  100% {
+    fill: var(--muted);
+  }
+}
+
+@keyframes how-route {
+  0%,
+  25% {
+    stroke-dashoffset: 0;
+    opacity: 0.4;
+  }
+  26%,
+  59% {
+    opacity: 1;
+  }
+  60% {
+    stroke-dashoffset: -40;
+    opacity: 0.4;
+  }
+  100% {
+    stroke-dashoffset: -40;
+    opacity: 0.2;
+  }
+}
+
+@keyframes how-pipe {
+  0%,
+  59% {
+    opacity: 1;
+  }
+  62%,
+  100% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes how-show-pairing {
+  0%,
+  59% {
+    opacity: 1;
+  }
+  60%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes how-show-direct {
+  0%,
+  59% {
+    opacity: 0;
+  }
+  62%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes how-direct {
+  0%,
+  59% {
+    stroke-opacity: 0.15;
+  }
+  62%,
+  100% {
+    stroke-opacity: 1;
+  }
+}
+
+@keyframes how-sealed-ab {
+  0%,
+  26% {
+    opacity: 0;
+    transform: translate(58px, 92px);
+  }
+  27% {
+    opacity: 1;
+    transform: translate(58px, 92px);
+  }
+  32% {
+    transform: translate(170px, 70px);
+  }
+  36% {
+    transform: translate(230px, 70px);
+  }
+  41% {
+    opacity: 1;
+    transform: translate(342px, 92px);
+  }
+  42%,
+  100% {
+    opacity: 0;
+    transform: translate(342px, 92px);
+  }
+}
+
+@keyframes how-sealed-ba {
+  0%,
+  43% {
+    opacity: 0;
+    transform: translate(342px, 92px);
+  }
+  44% {
+    opacity: 1;
+    transform: translate(342px, 92px);
+  }
+  49% {
+    transform: translate(230px, 70px);
+  }
+  53% {
+    transform: translate(170px, 70px);
+  }
+  58% {
+    opacity: 1;
+    transform: translate(58px, 92px);
+  }
+  59%,
+  100% {
+    opacity: 0;
+    transform: translate(58px, 92px);
+  }
+}
+
+@keyframes how-data-ab {
+  0%,
+  63% {
+    opacity: 0;
+    transform: translate(100px, 160px);
+  }
+  64% {
+    opacity: 1;
+    transform: translate(100px, 160px);
+  }
+  78% {
+    opacity: 1;
+    transform: translate(300px, 160px);
+  }
+  79%,
+  100% {
+    opacity: 0;
+    transform: translate(300px, 160px);
+  }
+}
+
+@keyframes how-data-ba {
+  0%,
+  80% {
+    opacity: 0;
+    transform: translate(300px, 160px);
+  }
+  81% {
+    opacity: 1;
+    transform: translate(300px, 160px);
+  }
+  95% {
+    opacity: 1;
+    transform: translate(100px, 160px);
+  }
+  96%,
+  100% {
+    opacity: 0;
+    transform: translate(100px, 160px);
+  }
+}
+
+@keyframes how-step-code {
+  0%,
+  24% {
+    color: var(--fg);
+  }
+  26%,
+  100% {
+    color: var(--muted);
+  }
+}
+
+@keyframes how-step-pipe {
+  0%,
+  24% {
+    color: var(--muted);
+  }
+  26%,
+  59% {
+    color: var(--fg);
+  }
+  61%,
+  100% {
+    color: var(--muted);
+  }
+}
+
+@keyframes how-step-direct {
+  0%,
+  59% {
+    color: var(--muted);
+  }
+  61%,
+  100% {
+    color: var(--fg);
+  }
+}
+
+/* Without motion: a still picture of the end state, every step readable. */
+@media (prefers-reduced-motion: reduce) {
+  .how *,
+  .how-diagram * {
+    animation: none !important;
+  }
+  .how-diagram .packet,
+  .how-diagram .pipe-sees {
+    opacity: 0;
+  }
+  .how-diagram .pipe-idle,
+  .how-diagram .direct-label {
+    opacity: 1;
+  }
+  .how-steps {
+    color: var(--fg);
+  }
+}
+
+/* Wide screens: the app on the left, "How it works" on the right. */
+@media (min-width: 60rem) {
+  body {
+    display: grid;
+    grid-template-columns: minmax(0, 30rem) minmax(0, 30rem);
+    justify-content: center;
+    align-items: start;
+    gap: 1.5rem;
+  }
+
+  body > main,
+  body > .how {
+    max-width: none;
+    margin: 0;
+  }
+
+  body[data-state="connected"] {
+    grid-template-columns: minmax(0, 36rem);
+  }
+}
