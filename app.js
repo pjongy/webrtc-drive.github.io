@@ -35,6 +35,7 @@ export const PIPE_PATH_PREFIX = `webrtc-drive-${PROTOCOL_VERSION}-`;
 
 export const CHUNK_BYTES = 16 * 1024;
 export const CHUNK_MAX_BYTES = 64 * 1024;
+export const FALLBACK_CHUNK_BYTES = 4 * 1024;
 export const BUFFER_HIGH_BYTES = 4 * 1024 * 1024;
 export const BUFFER_LOW_BYTES = 1024 * 1024;
 
@@ -228,7 +229,7 @@ export async function cpaceFinish({ y, sid, ownShare, peerShare, role }) {
 
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
-export const SEAL_LABELS = Object.freeze({ offer: "offer", answer: "answer" });
+export const SEAL_LABELS = Object.freeze({ offer: "offer", answer: "answer", data: "data" });
 
 // The AES-256-GCM key: HKDF-SHA256(ikm = ISK, salt = empty, info).
 export async function deriveAeadKey(isk) {
@@ -772,12 +773,153 @@ function pipeFailure(result, timeoutReason) {
   return { status: "unreachable" };
 }
 
+export class PipeTransport extends EventTarget {
+  constructor({ pipeUrl, channel, sid, key, role, pipe = defaultPipe, signal }) {
+    super();
+    this.pipeUrl = pipeUrl;
+    this.channel = channel;
+    this.sid = sid;
+    this.key = key;
+    this.role = role;
+    this.pipe = pipe;
+    this.binaryType = "arraybuffer";
+    this.bufferedAmount = 0;
+    this.bufferedAmountLowThreshold = 0;
+    this.readyState = "open";
+
+    this.sendSeq = 0;
+    this.recvSeq = 0;
+    this.sendQueue = [];
+    this.sending = false;
+
+    this.abortController = new AbortController();
+    this.onAbort = () => this.close();
+    signal?.addEventListener("abort", this.onAbort, { once: true });
+    if (signal?.aborted) this.close();
+
+    this.startReceiving();
+  }
+
+  send(data) {
+    if (this.readyState !== "open") throw new Error("channel not open");
+    this.sendQueue.push(data);
+    this.drainSendQueue();
+  }
+
+  async drainSendQueue() {
+    if (this.sending || this.sendQueue.length === 0 || this.readyState !== "open") return;
+    this.sending = true;
+    while (this.sendQueue.length > 0 && this.readyState === "open") {
+      const data = this.sendQueue.shift();
+      const seq = this.sendSeq++;
+      const dir = this.role === "initiator" ? "c2j" : "j2c";
+      const url = `${this.pipeUrl.replace(/\/$/, "")}/${PIPE_PATH_PREFIX}${this.channel}-d-${dir}-${seq}`;
+
+      let payloadJson;
+      if (typeof data === "string") {
+        payloadJson = JSON.stringify({ t: "str", s: data });
+      } else {
+        const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+        payloadJson = JSON.stringify({ t: "bin", b: base64urlEncode(u8) });
+      }
+
+      try {
+        const sealed = await seal(this.key, "data", this.channel, this.sid, payloadJson);
+        const res = await this.pipe.send(url, sealed, { signal: this.abortController.signal });
+        if (res.status !== "ok" && this.readyState === "open") {
+          this.close();
+          return;
+        }
+      } catch {
+        if (this.readyState === "open") this.close();
+        return;
+      }
+    }
+    this.sending = false;
+  }
+
+  async startReceiving() {
+    const dir = this.role === "initiator" ? "j2c" : "c2j";
+    while (this.readyState === "open") {
+      const seq = this.recvSeq++;
+      const url = `${this.pipeUrl.replace(/\/$/, "")}/${PIPE_PATH_PREFIX}${this.channel}-d-${dir}-${seq}`;
+      try {
+        const res = await this.pipe.receive(url, { signal: this.abortController.signal });
+        if (this.readyState !== "open") break;
+        if (res.status !== "ok") {
+          this.close();
+          break;
+        }
+        const plaintext = await open(this.key, "data", this.channel, this.sid, res.body);
+        if (plaintext === null) {
+          this.close();
+          break;
+        }
+        const parsed = JSON.parse(plaintext);
+        let messageData;
+        if (parsed.t === "str") {
+          messageData = parsed.s;
+        } else if (parsed.t === "bin") {
+          const u8 = base64urlDecode(parsed.b);
+          if (!u8) {
+            this.close();
+            break;
+          }
+          messageData = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+        } else {
+          continue;
+        }
+        this.dispatchEvent(Object.assign(new Event("message"), { data: messageData }));
+      } catch {
+        if (this.readyState === "open") this.close();
+        break;
+      }
+    }
+  }
+
+  close() {
+    if (this.readyState === "closed") return;
+    this.readyState = "closed";
+    this.abortController.abort();
+    this.dispatchEvent(new Event("close"));
+  }
+}
+
+export function createPipeTransport(options) {
+  return new PipeTransport(options);
+}
+
 // On failure, tells apart the common case where one side is reachable only
 // over IPv4 and the other only over IPv6 (e.g. an IPv6-only cellular network).
-async function connectedOrFailed(pc, getChannel, timeouts, signal, sdps) {
+// If fallback is available and not aborted, falls back to CPace encrypted relay transport.
+async function connectedOrFailed(pc, getChannel, timeouts, signal, sdps, fallbackContext) {
   const opened = await waitForOpen(pc, getChannel, timeouts.connect, signal);
   if (opened === "open") return { status: "connected", pc, dc: getChannel() };
   if (opened === "aborted") return { status: "aborted" };
+
+  if (fallbackContext) {
+    pc?.close();
+    const fallbackTransport = createPipeTransport({
+      pipeUrl: fallbackContext.pipeUrl,
+      channel: fallbackContext.channel,
+      sid: fallbackContext.sid,
+      key: fallbackContext.key,
+      role: fallbackContext.role,
+      pipe: fallbackContext.pipe,
+      signal,
+    });
+    const fallbackPc = {
+      close() {
+        fallbackTransport.close();
+      },
+      connectionState: "connected",
+      sctp: null,
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    return { status: "connected", pc: fallbackPc, dc: fallbackTransport, isFallback: true };
+  }
+
   const reason = ipFamiliesIncompatible(sdps.local, sdps.remote) ? "ip-mismatch" : "no-direct-path";
   return { status: "failed", reason };
 }
@@ -795,6 +937,7 @@ export async function runCreator({
   createPeerConnection = defaultPeerConnection,
   timeouts = DEFAULT_TIMEOUTS,
   onProgress = () => {},
+  enableFallback = true,
 }) {
   const { channel, secret } = parseCode(code);
   const url = (step) => pipePathUrl(pipeUrl, channel, step);
@@ -872,7 +1015,13 @@ export async function runCreator({
     logCandidates("remote", answerSdp);
     await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
     const sdps = { local: offerSdp, remote: answerSdp };
-    return withCleanup(pc, await connectedOrFailed(pc, () => dc, timeouts, signal, sdps));
+    const fallbackContext = enableFallback
+      ? { pipeUrl, channel, sid, key, role: "initiator", pipe }
+      : null;
+    return withCleanup(
+      pc,
+      await connectedOrFailed(pc, () => dc, timeouts, signal, sdps, fallbackContext),
+    );
   } catch (error) {
     pc?.close();
     if (signal?.aborted) return { status: "aborted" };
@@ -888,6 +1037,7 @@ export async function runJoiner({
   createPeerConnection = defaultPeerConnection,
   timeouts = DEFAULT_TIMEOUTS,
   onProgress = () => {},
+  enableFallback = true,
 }) {
   const { channel, secret } = parseCode(code);
   const url = (step) => pipePathUrl(pipeUrl, channel, step);
@@ -941,7 +1091,13 @@ export async function runJoiner({
     const sentAnswer = await pipe.send(url("r"), sealedAnswer, options);
     if (sentAnswer.status !== "ok") return withCleanup(pc, pipeFailure(sentAnswer, "timeout"));
     const sdps = { local: pc.localDescription.sdp, remote: offerSdp };
-    return withCleanup(pc, await connectedOrFailed(pc, () => dc, timeouts, signal, sdps));
+    const fallbackContext = enableFallback
+      ? { pipeUrl, channel, sid, key, role: "responder", pipe }
+      : null;
+    return withCleanup(
+      pc,
+      await connectedOrFailed(pc, () => dc, timeouts, signal, sdps, fallbackContext),
+    );
   } catch (error) {
     pc?.close();
     if (signal?.aborted) return { status: "aborted" };
@@ -972,7 +1128,12 @@ export class Session extends EventTarget {
     this.parts = [];
     this.pumping = null; // { id, cancelled }
     this.closed = false;
-    this.chunkBytes = pc.sctp?.maxMessageSize >= CHUNK_MAX_BYTES ? CHUNK_MAX_BYTES : CHUNK_BYTES;
+    this.chunkBytes =
+      dc instanceof PipeTransport
+        ? FALLBACK_CHUNK_BYTES
+        : pc.sctp?.maxMessageSize >= CHUNK_MAX_BYTES
+          ? CHUNK_MAX_BYTES
+          : CHUNK_BYTES;
     dc.binaryType = "arraybuffer";
     dc.bufferedAmountLowThreshold = BUFFER_LOW_BYTES;
     dc.addEventListener("message", (event) => this.onMessage(event.data));
@@ -1288,7 +1449,7 @@ async function startScanner(video, { onText }) {
   };
 }
 
-class App {
+export class App {
   constructor(root, { pipeUrl, pageBase }) {
     this.root = root;
     this.pipeUrl = pipeUrl;
@@ -1303,6 +1464,9 @@ class App {
 
   setState(state) {
     document.body.dataset.state = state;
+    if (state !== "connected") {
+      delete document.body.dataset.fallback;
+    }
   }
 
   show(view) {
@@ -1314,6 +1478,7 @@ class App {
 
   // Idle: show my code and listen for a joiner as the creator.
   startIdle(message) {
+    delete document.body.dataset.fallback;
     this.idleAbort?.abort();
     const controller = new AbortController();
     this.idleAbort = controller;
@@ -1537,15 +1702,21 @@ class App {
     );
   }
 
-  enterConnected({ pc, dc }) {
+  enterConnected({ pc, dc, isFallback }) {
     this.idleAbort = null;
     this.myCode = null;
+    if (isFallback) {
+      document.body.dataset.fallback = "true";
+    } else {
+      delete document.body.dataset.fallback;
+    }
     const session = new Session(pc, dc);
     this.session = session;
     const blobUrls = [];
     const end = (message = MESSAGES.disconnected) => {
       if (this.session !== session) return;
       this.session = null;
+      delete document.body.dataset.fallback;
       session.close();
       for (const url of blobUrls) URL.revokeObjectURL(url);
       this.startIdle(message);
@@ -1555,6 +1726,14 @@ class App {
       if (["failed", "closed"].includes(pc.connectionState)) end();
     });
     session.addEventListener("version", () => end(MESSAGES.version));
+
+    const banner = isFallback
+      ? h(
+          "div",
+          { className: "relay-banner", role: "alert" },
+          "⚠️ Direct WebRTC unavailable. Running in CPace end-to-end encrypted relay fallback mode.",
+        )
+      : null;
 
     const messages = h("ul", { className: "messages", "aria-live": "polite" });
     const transfers = h("ul", { className: "transfers" });
@@ -1587,6 +1766,7 @@ class App {
     const view = h(
       "section",
       { className: "card", dataset: { view: "connected" } },
+      banner,
       h("p", { className: "progress", role: "status" }, "Connected"),
       messages,
       h(
