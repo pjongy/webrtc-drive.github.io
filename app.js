@@ -27,6 +27,8 @@ export const STEP_TIMEOUT_MS = 20_000;
 export const ICE_GATHER_TIMEOUT_MS = 3_000;
 export const CONNECT_TIMEOUT_MS = 15_000;
 export const DISCONNECTED_GRACE_MS = 10_000;
+export const PING_INTERVAL_MS = 5_000;
+export const PING_TIMEOUT_MS = 15_000;
 
 export const MAX_BODY_BYTES = 8 * 1024;
 export const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 5_000]; // the last value repeats
@@ -774,7 +776,17 @@ function pipeFailure(result, timeoutReason) {
 }
 
 export class PipeTransport extends EventTarget {
-  constructor({ pipeUrl, channel, sid, key, role, pipe = defaultPipe, signal }) {
+  constructor({
+    pipeUrl,
+    channel,
+    sid,
+    key,
+    role,
+    pipe = defaultPipe,
+    signal,
+    pingIntervalMs = PING_INTERVAL_MS,
+    pingTimeoutMs = PING_TIMEOUT_MS,
+  }) {
     super();
     this.pipeUrl = pipeUrl;
     this.channel = channel;
@@ -782,6 +794,9 @@ export class PipeTransport extends EventTarget {
     this.key = key;
     this.role = role;
     this.pipe = pipe;
+    this.pingIntervalMs = pingIntervalMs;
+    this.pingTimeoutMs = pingTimeoutMs;
+
     this.binaryType = "arraybuffer";
     this.bufferedAmount = 0;
     this.bufferedAmountLowThreshold = 0;
@@ -797,30 +812,62 @@ export class PipeTransport extends EventTarget {
     signal?.addEventListener("abort", this.onAbort, { once: true });
     if (signal?.aborted) this.close();
 
+    this.lastReceivedAt = Date.now();
+    this.pingTimer = null;
+    this.checkTimer = null;
+    this.startHeartbeat();
     this.startReceiving();
   }
 
   send(data) {
     if (this.readyState !== "open") throw new Error("channel not open");
-    this.sendQueue.push(data);
+    this.sendQueue.push({ type: "user", data });
     this.drainSendQueue();
+  }
+
+  sendInternal(type) {
+    if (this.readyState !== "open") return;
+    this.sendQueue.push({ type });
+    this.drainSendQueue();
+  }
+
+  startHeartbeat() {
+    this.pingTimer = setInterval(() => {
+      if (this.readyState !== "open") return;
+      this.sendInternal("ping");
+    }, this.pingIntervalMs);
+
+    this.checkTimer = setInterval(
+      () => {
+        if (this.readyState !== "open") return;
+        if (Date.now() - this.lastReceivedAt > this.pingTimeoutMs) {
+          this.close();
+        }
+      },
+      Math.max(100, Math.floor(this.pingIntervalMs / 2)),
+    );
   }
 
   async drainSendQueue() {
     if (this.sending || this.sendQueue.length === 0 || this.readyState !== "open") return;
     this.sending = true;
     while (this.sendQueue.length > 0 && this.readyState === "open") {
-      const data = this.sendQueue.shift();
+      const item = this.sendQueue.shift();
       const seq = this.sendSeq++;
       const dir = this.role === "initiator" ? "c2j" : "j2c";
       const url = `${this.pipeUrl.replace(/\/$/, "")}/${PIPE_PATH_PREFIX}${this.channel}-d-${dir}-${seq}`;
 
       let payloadJson;
-      if (typeof data === "string") {
-        payloadJson = JSON.stringify({ t: "str", s: data });
+      if (item.type === "ping" || item.type === "pong") {
+        payloadJson = JSON.stringify({ t: item.type });
       } else {
-        const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
-        payloadJson = JSON.stringify({ t: "bin", b: base64urlEncode(u8) });
+        const { data } = item;
+        if (typeof data === "string") {
+          payloadJson = JSON.stringify({ t: "str", s: data });
+        } else {
+          const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+          payloadJson = JSON.stringify({ t: "bin", b: base64urlEncode(u8) });
+        }
       }
 
       try {
@@ -855,7 +902,15 @@ export class PipeTransport extends EventTarget {
           this.close();
           break;
         }
+        this.lastReceivedAt = Date.now();
         const parsed = JSON.parse(plaintext);
+        if (parsed.t === "ping") {
+          this.sendInternal("pong");
+          continue;
+        }
+        if (parsed.t === "pong") {
+          continue;
+        }
         let messageData;
         if (parsed.t === "str") {
           messageData = parsed.s;
@@ -880,6 +935,8 @@ export class PipeTransport extends EventTarget {
   close() {
     if (this.readyState === "closed") return;
     this.readyState = "closed";
+    clearInterval(this.pingTimer);
+    clearInterval(this.checkTimer);
     this.abortController.abort();
     this.dispatchEvent(new Event("close"));
   }
