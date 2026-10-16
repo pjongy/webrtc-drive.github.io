@@ -1448,6 +1448,31 @@ export function formatBytes(bytes) {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
+export function filesFromClipboardItems(items, now = Date.now()) {
+  const files = [];
+  if (!items) return files;
+  let screenshotIndex = 1;
+  for (const item of items) {
+    const file = typeof item?.getAsFile === "function" ? item.getAsFile() : item;
+    if (!(file instanceof File) && !(file instanceof Blob)) continue;
+    const type = file.type || "";
+    let name = file.name;
+    if (!name && type.startsWith("image/")) {
+      const ext = type.split("/")[1] || "png";
+      const suffix = screenshotIndex > 1 ? `-${screenshotIndex}` : "";
+      name = `screenshot-${now}${suffix}.${ext}`;
+      screenshotIndex++;
+    }
+    if (!name) continue;
+    files.push(
+      file instanceof File && file.name === name
+        ? file
+        : new File([file], name, { type: file.type, lastModified: now }),
+    );
+  }
+  return files;
+}
+
 function qrDataUrl(text) {
   const qr = qrcode(0, "M");
   qr.addData(text);
@@ -1843,7 +1868,7 @@ export class App {
         { className: "file-pick" },
         fileInput,
         h("span", {}, "Send files"),
-        h("span", { className: "hint" }, " or drop them here"),
+        h("span", { className: "hint" }, " or drop or paste them here"),
       ),
       transfers,
       h("button", { className: "secondary", onclick: () => end() }, "Disconnect"),
@@ -1857,6 +1882,17 @@ export class App {
       event.preventDefault();
       view.classList.remove("dropping");
       session.sendFiles([...event.dataTransfer.files]);
+    });
+    view.addEventListener("paste", (event) => {
+      const clipboard = event.clipboardData;
+      if (!clipboard) return;
+      const files = filesFromClipboardItems(
+        clipboard.items ? [...clipboard.items] : [...(clipboard.files ?? [])],
+      );
+      if (files.length > 0) {
+        event.preventDefault();
+        session.sendFiles(files);
+      }
     });
 
     const items = new Map();
