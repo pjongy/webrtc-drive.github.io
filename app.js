@@ -26,9 +26,10 @@ export const JOIN_GET_TIMEOUT_MS = 10_000;
 export const STEP_TIMEOUT_MS = 20_000;
 export const ICE_GATHER_TIMEOUT_MS = 3_000;
 export const CONNECT_TIMEOUT_MS = 15_000;
-export const DISCONNECTED_GRACE_MS = 10_000;
+export const DISCONNECTED_GRACE_MS = 60_000;
+export const RECONNECT_GRACE_MS = 60_000;
 export const PING_INTERVAL_MS = 5_000;
-export const PING_TIMEOUT_MS = 15_000;
+export const PING_TIMEOUT_MS = 60_000;
 
 export const MAX_BODY_BYTES = 8 * 1024;
 export const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 5_000]; // the last value repeats
@@ -1378,6 +1379,42 @@ export class Session extends EventTarget {
 }
 
 // ---------------------------------------------------------------------------
+// Background keep-alive & silent audio helper
+// ---------------------------------------------------------------------------
+
+export function startSilentAudio() {
+  if (typeof window === "undefined") return () => {};
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return () => {};
+    const ctx = new AudioCtx();
+    // Create an oscillator and gain node at near-zero gain (inaudible)
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.001; // barely above 0 to prevent browser optimization from suspending it
+    osc.frequency.value = 440;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+    return () => {
+      try {
+        osc.stop();
+        osc.disconnect();
+        gain.disconnect();
+        ctx.close().catch(() => {});
+      } catch {
+        // ignore errors on cleanup
+      }
+    };
+  } catch {
+    return () => {};
+  }
+}
+
+// ---------------------------------------------------------------------------
 // QR scanning helpers (docs/design.md §8)
 // ---------------------------------------------------------------------------
 
@@ -1795,19 +1832,24 @@ export class App {
     const session = new Session(pc, dc);
     this.session = session;
     const blobUrls = [];
+    const stopAudio = startSilentAudio();
+
+    let reconnectTimer = null;
+    let reconnectCountdownTimer = null;
+    let isReconnecting = false;
+
     const end = (message = MESSAGES.disconnected) => {
       if (this.session !== session) return;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (reconnectCountdownTimer) clearInterval(reconnectCountdownTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stopAudio();
       this.session = null;
       delete document.body.dataset.fallback;
       session.close();
       for (const url of blobUrls) URL.revokeObjectURL(url);
       this.startIdle(message);
     };
-    dc.addEventListener("close", () => end());
-    pc.addEventListener("connectionstatechange", () => {
-      if (["failed", "closed"].includes(pc.connectionState)) end();
-    });
-    session.addEventListener("version", () => end(MESSAGES.version));
 
     const banner = isFallback
       ? h(
@@ -1816,6 +1858,67 @@ export class App {
           "⚠️ Direct WebRTC unavailable. Running in CPace end-to-end encrypted relay fallback mode.",
         )
       : null;
+
+    const reconnectBanner = h(
+      "div",
+      { className: "reconnect-banner", role: "alert", style: "display: none" },
+      "",
+    );
+
+    const startReconnecting = () => {
+      if (this.session !== session || isReconnecting) return;
+      isReconnecting = true;
+      const reconnectDeadline = Date.now() + RECONNECT_GRACE_MS;
+      reconnectBanner.style.display = "";
+      const updateBannerText = () => {
+        const remainingSec = Math.max(0, Math.ceil((reconnectDeadline - Date.now()) / 1000));
+        reconnectBanner.textContent = `⚠️ Connection lost. Waiting to reconnect… (${remainingSec}s)`;
+      };
+      updateBannerText();
+      reconnectCountdownTimer = setInterval(updateBannerText, 1000);
+
+      reconnectTimer = setTimeout(() => {
+        end(MESSAGES.disconnected);
+      }, RECONNECT_GRACE_MS);
+    };
+
+    const stopReconnecting = () => {
+      if (!isReconnecting) return;
+      isReconnecting = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (reconnectCountdownTimer) clearInterval(reconnectCountdownTimer);
+      reconnectTimer = null;
+      reconnectCountdownTimer = null;
+      reconnectBanner.style.display = "none";
+    };
+
+    dc.addEventListener("close", () => {
+      startReconnecting();
+    });
+    dc.addEventListener("open", () => {
+      stopReconnecting();
+    });
+    pc.addEventListener("connectionstatechange", () => {
+      if (["failed", "closed"].includes(pc.connectionState)) {
+        startReconnecting();
+      } else if (pc.connectionState === "connected") {
+        stopReconnecting();
+      }
+    });
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        if (
+          dc.readyState === "open" &&
+          (!pc.connectionState || pc.connectionState === "connected")
+        ) {
+          stopReconnecting();
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    session.addEventListener("version", () => end(MESSAGES.version));
 
     const messages = h("ul", { className: "messages", "aria-live": "polite" });
     const transfers = h("ul", { className: "transfers" });
@@ -1849,6 +1952,7 @@ export class App {
       "section",
       { className: "card", dataset: { view: "connected" } },
       banner,
+      reconnectBanner,
       h("p", { className: "progress", role: "status" }, "Connected"),
       messages,
       h(
