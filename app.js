@@ -787,6 +787,7 @@ export class PipeTransport extends EventTarget {
     signal,
     pingIntervalMs = PING_INTERVAL_MS,
     pingTimeoutMs = PING_TIMEOUT_MS,
+    retryDelaysMs = RETRY_DELAYS_MS,
   }) {
     super();
     this.pipeUrl = pipeUrl;
@@ -797,6 +798,7 @@ export class PipeTransport extends EventTarget {
     this.pipe = pipe;
     this.pingIntervalMs = pingIntervalMs;
     this.pingTimeoutMs = pingTimeoutMs;
+    this.retryDelaysMs = retryDelaysMs;
 
     this.binaryType = "arraybuffer";
     this.bufferedAmount = 0;
@@ -871,16 +873,27 @@ export class PipeTransport extends EventTarget {
         }
       }
 
-      try {
-        const sealed = await seal(this.key, "data", this.channel, this.sid, payloadJson);
-        const res = await this.pipe.send(url, sealed, { signal: this.abortController.signal });
-        if (res.status !== "ok" && this.readyState === "open") {
-          this.close();
-          return;
+      let sent = false;
+      let retries = 0;
+      while (!sent && this.readyState === "open") {
+        try {
+          const sealed = await seal(this.key, "data", this.channel, this.sid, payloadJson);
+          const res = await this.pipe.send(url, sealed, { signal: this.abortController.signal });
+          if (res.status === "ok") {
+            sent = true;
+            break;
+          }
+          if (res.httpStatus >= 400 && res.httpStatus < 500) {
+            this.close();
+            return;
+          }
+        } catch {
+          // transient network failure or tab background sleep, retry with backoff
         }
-      } catch {
-        if (this.readyState === "open") this.close();
-        return;
+        if (this.readyState !== "open") return;
+        const delay = this.retryDelaysMs[Math.min(retries, this.retryDelaysMs.length - 1)];
+        retries += 1;
+        await abortableSleep(delay, this.abortController.signal);
       }
     }
     this.sending = false;
@@ -891,45 +904,58 @@ export class PipeTransport extends EventTarget {
     while (this.readyState === "open") {
       const seq = this.recvSeq++;
       const url = `${this.pipeUrl.replace(/\/$/, "")}/${PIPE_PATH_PREFIX}${this.channel}-d-${dir}-${seq}`;
-      try {
-        const res = await this.pipe.receive(url, { signal: this.abortController.signal });
-        if (this.readyState !== "open") break;
-        if (res.status !== "ok") {
-          this.close();
-          break;
-        }
-        const plaintext = await open(this.key, "data", this.channel, this.sid, res.body);
-        if (plaintext === null) {
-          this.close();
-          break;
-        }
-        this.lastReceivedAt = Date.now();
-        const parsed = JSON.parse(plaintext);
-        if (parsed.t === "ping") {
-          this.sendInternal("pong");
-          continue;
-        }
-        if (parsed.t === "pong") {
-          continue;
-        }
-        let messageData;
-        if (parsed.t === "str") {
-          messageData = parsed.s;
-        } else if (parsed.t === "bin") {
-          const u8 = base64urlDecode(parsed.b);
-          if (!u8) {
-            this.close();
+      let receivedBody = null;
+      let retries = 0;
+      while (receivedBody === null && this.readyState === "open") {
+        try {
+          const res = await this.pipe.receive(url, { signal: this.abortController.signal });
+          if (this.readyState !== "open") break;
+          if (res.status === "ok") {
+            receivedBody = res.body;
             break;
           }
-          messageData = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-        } else {
-          continue;
+          if (res.httpStatus >= 400 && res.httpStatus < 500) {
+            this.close();
+            return;
+          }
+        } catch {
+          // transient network failure or tab background sleep, retry with backoff
         }
-        this.dispatchEvent(Object.assign(new Event("message"), { data: messageData }));
-      } catch {
-        if (this.readyState === "open") this.close();
+        if (this.readyState !== "open") return;
+        const delay = this.retryDelaysMs[Math.min(retries, this.retryDelaysMs.length - 1)];
+        retries += 1;
+        await abortableSleep(delay, this.abortController.signal);
+      }
+      if (this.readyState !== "open" || receivedBody === null) break;
+
+      const plaintext = await open(this.key, "data", this.channel, this.sid, receivedBody);
+      if (plaintext === null) {
+        this.close();
         break;
       }
+      this.lastReceivedAt = Date.now();
+      const parsed = JSON.parse(plaintext);
+      if (parsed.t === "ping") {
+        this.sendInternal("pong");
+        continue;
+      }
+      if (parsed.t === "pong") {
+        continue;
+      }
+      let messageData;
+      if (parsed.t === "str") {
+        messageData = parsed.s;
+      } else if (parsed.t === "bin") {
+        const u8 = base64urlDecode(parsed.b);
+        if (!u8) {
+          this.close();
+          break;
+        }
+        messageData = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+      } else {
+        continue;
+      }
+      this.dispatchEvent(Object.assign(new Event("message"), { data: messageData }));
     }
   }
 
@@ -1898,10 +1924,18 @@ export class App {
     dc.addEventListener("open", () => {
       stopReconnecting();
     });
-    pc.addEventListener("connectionstatechange", () => {
+    const checkPcState = () => {
       if (["failed", "closed"].includes(pc.connectionState)) {
         startReconnecting();
       } else if (pc.connectionState === "connected") {
+        stopReconnecting();
+      }
+    };
+    pc.addEventListener("connectionstatechange", checkPcState);
+    pc.addEventListener?.("iceconnectionstatechange", () => {
+      if (["failed", "closed"].includes(pc.iceConnectionState)) {
+        startReconnecting();
+      } else if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
         stopReconnecting();
       }
     });
@@ -1913,6 +1947,17 @@ export class App {
           (!pc.connectionState || pc.connectionState === "connected")
         ) {
           stopReconnecting();
+        } else if (
+          pc.restartIce &&
+          (pc.connectionState === "failed" ||
+            pc.iceConnectionState === "failed" ||
+            pc.iceConnectionState === "disconnected")
+        ) {
+          try {
+            pc.restartIce();
+          } catch {
+            // ignore if not supported in current state
+          }
         }
       }
     };
